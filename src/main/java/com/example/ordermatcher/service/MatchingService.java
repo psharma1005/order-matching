@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import java.util.Comparator;
 import java.util.PriorityQueue;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class MatchingService {
@@ -21,6 +22,9 @@ public class MatchingService {
     private final ExecutorService executor;
     private final ConcurrentMap<String, SymbolOrderBook> books = new ConcurrentHashMap<>();
 
+    private final AtomicLong totalOrders = new AtomicLong();
+    private final AtomicLong totalLatencyNanos = new AtomicLong();
+
     public MatchingService(OrderRepository orderRepository,
                            @Value("${matching.thread-pool-size:8}") int threads) {
         this.orderRepository = orderRepository;
@@ -29,15 +33,26 @@ public class MatchingService {
 
     public CompletableFuture<Order> submit(OrderRequest req) {
         return CompletableFuture.supplyAsync(() -> {
+            long start = System.nanoTime();
+
             Order.Side side = Order.Side.valueOf(req.getSide().toUpperCase());
             Order order = Order.newOrder(req.getSymbol(), req.getQuantity(), req.getPrice(), side);
+
             orderRepository.save(order);
             SymbolOrderBook book = books.computeIfAbsent(order.getSymbol(), SymbolOrderBook::new);
             book.match(order);
             orderRepository.save(order);
+
+            long latency = System.nanoTime() - start;
+            totalOrders.incrementAndGet();
+            totalLatencyNanos.addAndGet(latency);
+
             return order;
         }, executor);
     }
+
+    public long getTotalOrders() { return totalOrders.get(); }
+    public long getTotalLatencyNanos() { return totalLatencyNanos.get(); }
 
     @PreDestroy
     public void shutdown() {
